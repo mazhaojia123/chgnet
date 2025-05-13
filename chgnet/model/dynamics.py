@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 
     from chgnet import PredTask
 
+import torch
+
 # We would like to thank M3GNet develop team for this module
 # source: https://github.com/materialsvirtuallab/m3gnet
 
@@ -179,6 +181,76 @@ class CHGNetCalculator(Calculator):
         self.results["crystal_fea"] = model_prediction["crystal_fea"]
         if self.return_site_energies:
             self.results["energies"] = model_prediction["site_energies"]
+        
+        # import logging
+        # logging.info(f"extensive_factor: {extensive_factor}")
+        # logging.info(f"stress_weight: {self.stress_weight}")
+        # logging.info(f"forces: {self.results['forces']}")
+        # logging.info(f"stress: {self.results['stress']}")
+
+    def predict(
+        self,
+        atoms_list: list,
+        properties: list | None = None,
+        system_changes: list | None = None,
+        task: PredTask = "efsm",
+    ) -> None:
+        """Calculate various properties of the atoms using CHGNet.
+
+        Args:
+            atoms (Atoms | None): The atoms object to calculate properties for.
+            properties (list | None): The properties to calculate.
+                Default is all properties.
+            system_changes (list | None): The changes made to the system.
+                Default is all changes.
+            task (PredTask): The task to perform. One of "e", "ef", "em", "efs", "efsm".
+                Default = "efsm"
+        """
+        properties = properties or all_properties
+        system_changes = system_changes or all_changes
+        # super().calculate(
+        #     atoms=atoms,
+        #     properties=properties,
+        #     system_changes=system_changes,
+        # )
+
+        graph_list=[]
+        extensive_factor_list = []
+        for atoms in atoms_list:
+            # Run CHGNet
+            structure = AseAtomsAdaptor.get_structure(atoms)
+            extensive_factor_list.append(len(structure) if self.model.is_intensive else 1)
+            graph_list.append(self.model.graph_converter(structure).to(self.device))
+
+        model_prediction = self.model.predict_graph(
+            graph_list,
+            task=task,
+            return_crystal_feas=True,
+            return_site_energies=self.return_site_energies,
+        )
+
+        if len(graph_list) == 1:
+            model_prediction = [model_prediction]
+
+        extensive_factor = len(structure) if self.model.is_intensive else 1
+        for pred, factor in zip(model_prediction, extensive_factor_list):
+            pred['e'] = pred['e'] * factor
+            pred['f'] = pred['f']
+            pred['s'] = pred['s'] * self.stress_weight
+
+        # Convert Result
+        # extensive_factor = len(structure) if self.model.is_intensive else 1
+        # key_map = dict(
+        #     e=("energy", extensive_factor),
+        #     f=("forces", 1),
+        #     m=("magmoms", 1),
+        #     s=("stress", self.stress_weight),
+        # )
+        # predictions = {'energy': [], 'forces': []}
+        # predictions["energy"] = torch.from_numpy(model_prediction["e"]).unsqueeze(-1).to(self.device, dtype=torch.float64)
+        # predictions["forces"] = torch.from_numpy(model_prediction["f"]).to(self.device, dtype=torch.float64)
+        # predictions["stress"] = torch.from_numpy(model_prediction["s"]).to(self.device, dtype=torch.float64)
+        return model_prediction
 
 
 class StructOptimizer:
